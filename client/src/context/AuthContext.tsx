@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { syncEngine, getServerUrl } from '../sync/syncEngine';
+import { safeJson } from '../utils/http';
 
 export interface User {
   id: string;
@@ -50,13 +51,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           headers: { 'Authorization': `Bearer ${storedToken}` }
         });
         if (res.ok) {
-          const data = await res.json();
-          setUser(data.user);
-          localStorage.setItem('level_up_user', JSON.stringify(data.user));
-          syncEngine.init();
+          const data = await safeJson(res);
+          if (data?.user) {
+            setUser(data.user);
+            localStorage.setItem('level_up_user', JSON.stringify(data.user));
+            syncEngine.init();
+          }
         }
       } catch {
-        // Offline or server unavailable - continue with cachedUser!
         if (cachedUser) {
           syncEngine.init();
         }
@@ -70,18 +72,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (email: string, password: string, deviceLabel: string = 'Browser Device') => {
     const baseUrl = getServerUrl();
-    const res = await fetch(`${baseUrl}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, device_label: deviceLabel })
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, device_label: deviceLabel })
+      });
+    } catch (err: any) {
+      throw new Error(`Cannot reach server at ${baseUrl || 'current origin'}. Check connection or use Offline Mode.`);
+    }
 
     if (!res.ok) {
-      const errorData = await res.json();
+      const errorData = await safeJson(res).catch(() => ({ error: `Login failed (${res.status} ${res.statusText})` }));
       throw new Error(errorData.error || 'Failed to log in');
     }
 
-    const data = await res.json();
+    const data = await safeJson(res);
+    if (!data.token) {
+      throw new Error('Server returned invalid response');
+    }
+
     localStorage.setItem('level_up_token', data.token);
     localStorage.setItem('level_up_user', JSON.stringify(data.user));
     if (data.deviceId) {
@@ -97,18 +108,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const register = async (email: string, password: string, displayName: string, timezone?: string) => {
     const baseUrl = getServerUrl();
     const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    const res = await fetch(`${baseUrl}/api/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, display_name: displayName, timezone: tz })
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, display_name: displayName, timezone: tz })
+      });
+    } catch (err: any) {
+      throw new Error(`Cannot reach server at ${baseUrl || 'current origin'}. Check connection or use Offline Mode.`);
+    }
 
     if (!res.ok) {
-      const errorData = await res.json();
+      const errorData = await safeJson(res).catch(() => ({ error: `Registration failed (${res.status} ${res.statusText})` }));
       throw new Error(errorData.error || 'Failed to create account');
     }
 
-    const data = await res.json();
+    const data = await safeJson(res);
+    if (!data.token) {
+      throw new Error('Server returned invalid response');
+    }
+
     localStorage.setItem('level_up_token', data.token);
     localStorage.setItem('level_up_user', JSON.stringify(data.user));
 

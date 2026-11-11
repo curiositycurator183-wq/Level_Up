@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.resolve(__dirname, '../data');
+const isVercel = Boolean(process.env.VERCEL);
+const DATA_DIR = isVercel 
+  ? '/tmp' 
+  : (process.env.DATA_DIR || path.resolve(__dirname, '../data'));
+
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
@@ -14,9 +18,15 @@ if (!fs.existsSync(DATA_DIR)) {
 const DB_PATH = path.join(DATA_DIR, 'level_up.sqlite');
 export const db = new DatabaseSync(DB_PATH);
 
-// Enable WAL mode and foreign keys for high performance and durability
+if (!isVercel) {
+  try {
+    db.exec('PRAGMA journal_mode = WAL;');
+  } catch {
+    // Ignore if WAL unsupported
+  }
+}
+
 db.exec(`
-  PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
 
   CREATE TABLE IF NOT EXISTS users (

@@ -1,5 +1,6 @@
 import { db } from '../db';
 import { EntityName, SyncQueueItem } from '../types';
+import { safeJson } from '../utils/http';
 
 export type SyncStatus = 'synced' | 'syncing' | 'offline' | 'pending' | 'error';
 
@@ -214,7 +215,7 @@ class SyncEngine {
         });
 
         if (res.ok) {
-          const pushData = await res.json();
+          const pushData = await safeJson(res);
           const ackIds: string[] = pushData.acknowledgedOperationIds || [];
           if (ackIds.length > 0) {
             await db.sync_queue.where('operation_id').anyOf(ackIds).delete();
@@ -241,7 +242,7 @@ class SyncEngine {
       });
 
       if (pullRes.ok) {
-        const pullData = await pullRes.json();
+        const pullData = await safeJson(pullRes);
         const entities = pullData.entities || {};
 
         for (const [entityName, records] of Object.entries(entities) as [EntityName, any[]][]) {

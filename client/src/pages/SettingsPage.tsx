@@ -4,6 +4,7 @@ import { db } from '../db';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { useTheme } from '../context/ThemeContext';
+import { safeJson } from '../utils/http';
 import { 
   Settings as SettingsIcon, 
   Cloud, 
@@ -73,10 +74,11 @@ export const SettingsPage: React.FC = () => {
   // Load devices list
   useEffect(() => {
     if (token) {
-      fetch('/api/devices', {
+      const baseUrl = localStorage.getItem('level_up_server_url') || '';
+      fetch(`${baseUrl}/api/devices`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
-        .then(res => res.ok ? res.json() : null)
+        .then(async res => res.ok ? safeJson(res) : null)
         .then(data => {
           if (data?.devices) setDevices(data.devices);
         })
@@ -171,7 +173,7 @@ export const SettingsPage: React.FC = () => {
       });
 
       if (!res.ok) {
-        const errorData = await res.json();
+        const errorData = await safeJson(res).catch(() => ({ error: 'Restore failed' }));
         throw new Error(errorData.error || 'Restore failed');
       }
 
@@ -206,7 +208,7 @@ export const SettingsPage: React.FC = () => {
       });
 
       if (!res.ok) {
-        const err = await res.json();
+        const err = await safeJson(res).catch(() => ({ error: 'Reset failed' }));
         throw new Error(err.error || 'Reset failed');
       }
 

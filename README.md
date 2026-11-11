@@ -52,8 +52,21 @@ The desktop web application is pre-configured for instant deployment on [Vercel]
 ### Method 2: Deploy via GitHub (Recommended)
 1. Push this repository to GitHub.
 2. Go to [vercel.com/new](https://vercel.com/new) and import your repository.
-3. Vercel automatically detects the Vite framework and runs the build command (`cd client && npm run build`).
-4. Click **Deploy**. Your desktop web app will be live on `https://<your-project>.vercel.app`.
+3. Vercel automatically detects the project and builds both the frontend and the built-in Vercel Serverless Backend API (`api/index.ts`).
+4. Click **Deploy**. Your desktop web app and backend API will be live on `https://<your-project>.vercel.app`.
+
+---
+
+## 🚀 Persistent Cloud Backend (Render / Railway / Docker)
+
+For 24/7 cross-device sync with persistent WebSockets and SQLite database, you can deploy the backend using the included configurations:
+
+### Option 1: Render (Free 24/7 Web Service)
+- Push to GitHub and go to [dashboard.render.com](https://dashboard.render.com/).
+- Click **New → Blueprint** and connect this repository. Render automatically reads [`render.yaml`](render.yaml) and provisions the service!
+
+### Option 2: Docker / Railway / Fly.io / VPS
+- A production [`Dockerfile`](Dockerfile) is included at root. Deploy with `docker build -t level-up . && docker run -p 3000:3000 level-up`.
 
 ### Local-First on Vercel:
 Because LEVEL UP is engineered with a **local-first IndexedDB architecture**, the desktop app on Vercel works **100% out of the box with zero external backend or database setup required**:
