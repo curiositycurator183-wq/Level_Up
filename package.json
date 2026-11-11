@@ -1,6 +1,7 @@
 {
   "name": "level-up",
   "version": "1.0.0",
+  "type": "module",
   "description": "LEVEL UP — Personal productivity and study management Progressive Web App",
   "private": true,
   "workspaces": [
