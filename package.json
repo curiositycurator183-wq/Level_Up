@@ -1,0 +1,19 @@
+{
+  "name": "level-up",
+  "version": "1.0.0",
+  "description": "LEVEL UP — Personal productivity and study management Progressive Web App",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd client && npm run build && cd ../server && npm run build",
+    "android:sync": "cd client && npm run android:sync",
+    "android:open": "cd client && npm run android:open",
+    "start": "cd server && npm start",
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
