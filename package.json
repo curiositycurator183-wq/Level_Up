@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "LEVEL UP — Personal productivity and study management Progressive Web App",
   "private": true,
+  "workspaces": [
+    "client"
+  ],
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "cd server && npm run dev",
@@ -14,6 +17,8 @@
     "install:all": "npm install && cd server && npm install && cd ../client && npm install"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
   }
 }
