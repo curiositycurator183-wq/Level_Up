@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { db } from '../db';
 import { syncEngine, getServerUrl } from '../sync/syncEngine';
 import { safeJson } from '../utils/http';
 
@@ -99,6 +100,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.setItem('level_up_device_id', data.deviceId);
     }
 
+    // Reset sync cursor on login so all entities (e.g. 25 tasks, subjects) are fully pulled from cloud
+    try {
+      await db.sync_meta.put({ key: 'last_cursor', value: 0 });
+    } catch {}
+
     setToken(data.token);
     setUser(data.user);
     syncEngine.connectWebSocket();
@@ -131,6 +137,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     localStorage.setItem('level_up_token', data.token);
     localStorage.setItem('level_up_user', JSON.stringify(data.user));
+
+    // Reset sync cursor on register
+    try {
+      await db.sync_meta.put({ key: 'last_cursor', value: 0 });
+    } catch {}
 
     setToken(data.token);
     setUser(data.user);

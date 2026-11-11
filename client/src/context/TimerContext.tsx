@@ -1,9 +1,11 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { db } from '../db';
 import { useAuth } from './AuthContext';
 import { useSync } from './SyncContext';
 import { Session, SessionType } from '../types';
 import { awardXP, checkAndUnlockAchievements } from '../domain/gamification';
+import { getServerUrl } from '../sync/syncEngine';
+import { safeJson } from '../utils/http';
 
 export type TimerMode = 'focus' | 'shortBreak' | 'longBreak';
 export type TimerStatus = 'idle' | 'running' | 'paused';
@@ -65,6 +67,129 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const targetEndTimeRef = useRef<number | null>(null);
   const sessionStartTimeRef = useRef<string>(new Date().toISOString());
+
+  // Cross-device server sync functions
+  const syncActiveTimerToServer = useCallback(async (customPayload?: any) => {
+    const token = localStorage.getItem('level_up_token');
+    if (!token) return;
+
+    const baseUrl = getServerUrl();
+    const payload = customPayload || {
+      mode,
+      status,
+      subjectId,
+      topicId,
+      sessionType,
+      notes,
+      plannedMinutes,
+      targetEndTime: targetEndTimeRef.current,
+      remainingSeconds,
+      actualElapsedSeconds,
+      sessionStartTime: sessionStartTimeRef.current
+    };
+
+    try {
+      await fetch(`${baseUrl}/api/timer/active`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+    } catch {
+      // Network or offline, fallback to local storage
+    }
+  }, [mode, status, subjectId, topicId, sessionType, notes, plannedMinutes, remainingSeconds, actualElapsedSeconds]);
+
+  const deleteActiveTimerOnServer = useCallback(async () => {
+    const token = localStorage.getItem('level_up_token');
+    if (!token) return;
+
+    const baseUrl = getServerUrl();
+    try {
+      await fetch(`${baseUrl}/api/timer/active`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const fetchRemoteTimer = useCallback(async () => {
+    const token = localStorage.getItem('level_up_token');
+    if (!token) return;
+
+    const baseUrl = getServerUrl();
+    try {
+      const res = await fetch(`${baseUrl}/api/timer/active`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (res.ok) {
+        const data = await safeJson(res);
+        if (data?.active && data?.timer) {
+          const t = data.timer;
+          setModeState(t.mode);
+          setSubjectId(t.subjectId);
+          setTopicId(t.topicId);
+          setSessionType(t.sessionType);
+          setNotes(t.notes || '');
+          setPlannedMinutes(t.plannedMinutes);
+          setActualElapsedSeconds(t.actualElapsedSeconds || 0);
+          sessionStartTimeRef.current = t.sessionStartTime;
+
+          if (t.status === 'running' && t.targetEndTime) {
+            const now = Date.now();
+            const left = Math.max(0, Math.round((t.targetEndTime - now) / 1000));
+            targetEndTimeRef.current = t.targetEndTime;
+            setRemainingSeconds(left);
+            setStatusState(left > 0 ? 'running' : 'paused');
+          } else {
+            targetEndTimeRef.current = null;
+            setRemainingSeconds(t.remainingSeconds);
+            setStatusState(t.status);
+          }
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  // Fetch remote timer on initial mount and when user / auth changes
+  useEffect(() => {
+    fetchRemoteTimer();
+  }, [user?.id, fetchRemoteTimer]);
+
+  // Periodic poll every 5s and on window focus/visibility to maintain 100% cross-device sync
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (user && navigator.onLine) {
+        fetchRemoteTimer();
+      }
+    }, 5000);
+
+    const onFocus = () => {
+      if (user && navigator.onLine) {
+        fetchRemoteTimer();
+      }
+    };
+
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [user, fetchRemoteTimer]);
 
   // Load persisted timer state on mount
   useEffect(() => {
@@ -183,20 +308,63 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const startTimer = () => {
     const end = Date.now() + remainingSeconds * 1000;
+    const startTime = new Date().toISOString();
     targetEndTimeRef.current = end;
-    sessionStartTimeRef.current = new Date().toISOString();
+    sessionStartTimeRef.current = startTime;
     setStatusState('running');
+
+    syncActiveTimerToServer({
+      mode,
+      status: 'running',
+      subjectId,
+      topicId,
+      sessionType,
+      notes,
+      plannedMinutes,
+      targetEndTime: end,
+      remainingSeconds,
+      actualElapsedSeconds,
+      sessionStartTime: startTime
+    });
   };
 
   const pauseTimer = () => {
     targetEndTimeRef.current = null;
     setStatusState('paused');
+
+    syncActiveTimerToServer({
+      mode,
+      status: 'paused',
+      subjectId,
+      topicId,
+      sessionType,
+      notes,
+      plannedMinutes,
+      targetEndTime: null,
+      remainingSeconds,
+      actualElapsedSeconds,
+      sessionStartTime: sessionStartTimeRef.current
+    });
   };
 
   const resumeTimer = () => {
     const end = Date.now() + remainingSeconds * 1000;
     targetEndTimeRef.current = end;
     setStatusState('running');
+
+    syncActiveTimerToServer({
+      mode,
+      status: 'running',
+      subjectId,
+      topicId,
+      sessionType,
+      notes,
+      plannedMinutes,
+      targetEndTime: end,
+      remainingSeconds,
+      actualElapsedSeconds,
+      sessionStartTime: sessionStartTimeRef.current
+    });
   };
 
   const resetTimer = () => {
@@ -205,6 +373,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setRemainingSeconds(plannedMinutes * 60);
     setActualElapsedSeconds(0);
     localStorage.removeItem(STORAGE_KEY);
+    deleteActiveTimerOnServer();
   };
 
   const finishSession = async (abandoned = false): Promise<{ session: Session; xpAwarded: boolean } | null> => {

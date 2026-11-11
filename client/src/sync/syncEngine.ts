@@ -79,12 +79,26 @@ class SyncEngine {
     // Connect WebSocket if token exists
     this.connectWebSocket();
 
-    // Periodic sync check every 25 seconds
+    // High-frequency sync check every 4 seconds for instant cross-device updates
     setInterval(() => {
       if (navigator.onLine && localStorage.getItem('level_up_token')) {
         this.syncNow();
       }
-    }, 25000);
+    }, 4000);
+
+    // Sync immediately whenever tab is focused or becomes visible (e.g. switching between phone & laptop)
+    const onWindowActive = () => {
+      if (navigator.onLine && localStorage.getItem('level_up_token')) {
+        this.syncNow();
+      }
+    };
+
+    window.addEventListener('focus', onWindowActive);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        onWindowActive();
+      }
+    });
   }
 
   public connectWebSocket() {

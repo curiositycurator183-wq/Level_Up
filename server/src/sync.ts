@@ -30,7 +30,7 @@ const TABLE_COLUMNS: Record<EntityType, string[]> = {
   user_settings: ['user_id', 'timezone', 'daily_target_minutes', 'theme', 'timer_focus_min', 'timer_short_break_min', 'timer_long_break_min', 'timer_long_break_interval', 'streak_min_minutes', 'show_xp', 'updated_at', 'version']
 };
 
-export function processMutations(userId: string, mutations: Mutation[]): { acknowledgedOperationIds: string[]; cursor: number } {
+export async function processMutations(userId: string, mutations: Mutation[]): Promise<{ acknowledgedOperationIds: string[]; cursor: number }> {
   const ackIds: string[] = [];
   const now = new Date().toISOString();
 
@@ -38,7 +38,7 @@ export function processMutations(userId: string, mutations: Mutation[]): { ackno
     const { operation_id, entity, entity_id, operation, data, version } = mut;
 
     // Check if this operation_id was already processed (idempotency check)
-    const existingOp = db.prepare('SELECT id FROM sync_ledger WHERE operation_id = ?').get(operation_id);
+    const existingOp = await db.prepare('SELECT id FROM sync_ledger WHERE operation_id = ?').get(operation_id);
     if (existingOp) {
       ackIds.push(operation_id);
       continue;
@@ -52,24 +52,22 @@ export function processMutations(userId: string, mutations: Mutation[]): { ackno
       // Soft-delete as tombstone
       if (table === 'user_settings') continue; // Don't delete settings
 
-      const existingRecord = db.prepare(`SELECT version FROM ${table} WHERE id = ? AND user_id = ?`).get(entity_id, userId) as any;
+      const existingRecord = await db.prepare(`SELECT version FROM ${table} WHERE id = ? AND user_id = ?`).get(entity_id, userId) as any;
       if (existingRecord) {
         const nextVersion = Math.max(existingRecord.version + 1, version || 1);
-        db.prepare(`UPDATE ${table} SET deleted_at = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ?`)
+        await db.prepare(`UPDATE ${table} SET deleted_at = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ?`)
           .run(now, nextVersion, now, entity_id, userId);
       } else {
         // Record deleted item even if not present yet
-        db.prepare(`INSERT INTO ${table} (id, user_id, created_at, updated_at, version, deleted_at) VALUES (?, ?, ?, ?, ?, ?)`)
+        await db.prepare(`INSERT INTO ${table} (id, user_id, created_at, updated_at, version, deleted_at) VALUES (?, ?, ?, ?, ?, ?)`)
           .run(entity_id, userId, now, now, version || 1, now);
       }
     } else {
       // UPSERT
-      const record = { ...data, user_id: userId };
-      
-      const existing = db.prepare(
+      const existing = await db.prepare(
         table === 'user_settings' 
-          ? `SELECT version FROM ${table} WHERE user_id = ?` 
-          : `SELECT version FROM ${table} WHERE id = ? AND user_id = ?`
+          ? `SELECT * FROM ${table} WHERE user_id = ?` 
+          : `SELECT * FROM ${table} WHERE id = ? AND user_id = ?`
       ).get(table === 'user_settings' ? userId : entity_id, ...(table === 'user_settings' ? [] : [userId])) as any;
 
       if (existing && existing.version > version) {
@@ -78,6 +76,14 @@ export function processMutations(userId: string, mutations: Mutation[]): { ackno
         ackIds.push(operation_id);
         continue;
       }
+
+      const record = {
+        created_at: now,
+        updated_at: now,
+        ...(existing || {}),
+        ...data,
+        user_id: userId
+      };
 
       const colsToInsert = allowedCols.filter(col => record[col] !== undefined);
       const placeholders = colsToInsert.map(() => '?').join(', ');
@@ -97,7 +103,7 @@ export function processMutations(userId: string, mutations: Mutation[]): { ackno
       `;
 
       try {
-        db.prepare(sql).run(...values);
+        await db.prepare(sql).run(...values);
       } catch (err: any) {
         console.error(`Error inserting into ${table}:`, err.message, record);
       }
@@ -105,25 +111,25 @@ export function processMutations(userId: string, mutations: Mutation[]): { ackno
 
     // Record in sync ledger
     try {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO sync_ledger (user_id, entity, entity_id, operation, payload, version, created_at, operation_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(userId, entity, entity_id, operation, JSON.stringify(data || {}), version || 1, now, operation_id);
-    } catch (err) {
-      // Ignore if operation_id duplicate
+    } catch (err: any) {
+      console.warn('Sync ledger insert error:', err.message);
     }
 
     ackIds.push(operation_id);
   }
 
   // Get current max ledger id as cursor
-  const maxLedger = db.prepare('SELECT MAX(id) as max_id FROM sync_ledger WHERE user_id = ?').get(userId) as any;
+  const maxLedger = await db.prepare('SELECT MAX(id) as max_id FROM sync_ledger WHERE user_id = ?').get(userId) as any;
   const cursor = maxLedger?.max_id || 0;
 
   return { acknowledgedOperationIds: ackIds, cursor };
 }
 
-export function pullChanges(userId: string, sinceCursor: number): { cursor: number; entities: Record<EntityType, any[]> } {
+export async function pullChanges(userId: string, sinceCursor: number): Promise<{ cursor: number; entities: Record<EntityType, any[]> }> {
   const result: Record<EntityType, any[]> = {
     subjects: [],
     chapters: [],
@@ -137,18 +143,18 @@ export function pullChanges(userId: string, sinceCursor: number): { cursor: numb
     user_settings: []
   };
 
-  const currentMax = db.prepare('SELECT MAX(id) as max_id FROM sync_ledger WHERE user_id = ?').get(userId) as any;
+  const currentMax = await db.prepare('SELECT MAX(id) as max_id FROM sync_ledger WHERE user_id = ?').get(userId) as any;
   const cursor = currentMax?.max_id || 0;
 
   if (sinceCursor === 0) {
     // Initial sync: fetch all active and tombstoned records
     for (const [entity, cols] of Object.entries(TABLE_COLUMNS) as [EntityType, string[]][]) {
-      const records = db.prepare(`SELECT ${cols.join(', ')} FROM ${entity} WHERE user_id = ?`).all(userId);
+      const records = await db.prepare(`SELECT ${cols.join(', ')} FROM ${entity} WHERE user_id = ?`).all(userId);
       result[entity] = records;
     }
   } else {
     // Delta sync: fetch records affected in ledger since cursor
-    const changes = db.prepare(`
+    const changes = await db.prepare(`
       SELECT DISTINCT entity, entity_id 
       FROM sync_ledger 
       WHERE user_id = ? AND id > ?
@@ -158,7 +164,7 @@ export function pullChanges(userId: string, sinceCursor: number): { cursor: numb
       const cols = TABLE_COLUMNS[change.entity];
       if (!cols) continue;
 
-      const record = db.prepare(
+      const record = await db.prepare(
         change.entity === 'user_settings'
           ? `SELECT ${cols.join(', ')} FROM ${change.entity} WHERE user_id = ?`
           : `SELECT ${cols.join(', ')} FROM ${change.entity} WHERE id = ? AND user_id = ?`
@@ -173,8 +179,8 @@ export function pullChanges(userId: string, sinceCursor: number): { cursor: numb
   return { cursor, entities: result };
 }
 
-export function exportFullBackup(userId: string) {
-  const user = db.prepare('SELECT id, email, display_name, timezone, created_at FROM users WHERE id = ?').get(userId);
+export async function exportFullBackup(userId: string) {
+  const user = await db.prepare('SELECT id, email, display_name, timezone, created_at FROM users WHERE id = ?').get(userId);
   const data: Record<string, any> = {
     schema_version: '1.0',
     exported_at: new Date().toISOString(),
@@ -183,25 +189,25 @@ export function exportFullBackup(userId: string) {
   };
 
   for (const entity of Object.keys(TABLE_COLUMNS) as EntityType[]) {
-    data.data[entity] = db.prepare(`SELECT * FROM ${entity} WHERE user_id = ?`).all(userId);
+    data.data[entity] = await db.prepare(`SELECT * FROM ${entity} WHERE user_id = ?`).all(userId);
   }
 
   return data;
 }
 
-export function restoreFullBackup(userId: string, backup: any) {
+export async function restoreFullBackup(userId: string, backup: any) {
   if (!backup || !backup.schema_version || !backup.data) {
     throw new Error('Invalid backup format');
   }
 
   // Transactionally restore
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
     for (const entity of Object.keys(TABLE_COLUMNS) as EntityType[]) {
       if (entity === 'user_settings') {
-        db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId);
+        await db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId);
       } else {
-        db.prepare(`DELETE FROM ${entity} WHERE user_id = ?`).run(userId);
+        await db.prepare(`DELETE FROM ${entity} WHERE user_id = ?`).run(userId);
       }
 
       const records = backup.data[entity] || [];
@@ -213,29 +219,29 @@ export function restoreFullBackup(userId: string, backup: any) {
         const placeholders = validCols.map(() => '?').join(', ');
         const values = validCols.map(c => item[c]);
 
-        db.prepare(`INSERT INTO ${entity} (${validCols.join(', ')}) VALUES (${placeholders})`).run(...values);
+        await db.prepare(`INSERT INTO ${entity} (${validCols.join(', ')}) VALUES (${placeholders})`).run(...values);
       }
     }
 
-    db.exec('COMMIT;');
+    await db.exec('COMMIT;');
   } catch (err) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw err;
   }
 }
 
-export function resetUserData(userId: string) {
-  db.exec('BEGIN TRANSACTION;');
+export async function resetUserData(userId: string) {
+  await db.exec('BEGIN TRANSACTION;');
   try {
     for (const entity of Object.keys(TABLE_COLUMNS) as EntityType[]) {
       if (entity !== 'user_settings') {
-        db.prepare(`DELETE FROM ${entity} WHERE user_id = ?`).run(userId);
+        await db.prepare(`DELETE FROM ${entity} WHERE user_id = ?`).run(userId);
       }
     }
-    db.prepare('DELETE FROM sync_ledger WHERE user_id = ?').run(userId);
-    db.exec('COMMIT;');
+    await db.prepare('DELETE FROM sync_ledger WHERE user_id = ?').run(userId);
+    await db.exec('COMMIT;');
   } catch (err) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw err;
   }
 }
