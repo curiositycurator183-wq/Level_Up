@@ -53,7 +53,8 @@ class JsonStore {
     xp_events: [],
     achievements: [],
     user_settings: [],
-    active_timers: []
+    active_timers: [],
+    password_resets: []
   };
 
   constructor(filePath: string) {
@@ -138,6 +139,15 @@ class JsonStore {
       const userId = params[0];
       const t = (this.tables.active_timers || []).find(x => x.user_id === userId);
       return t ? [t] : [];
+    }
+
+    // SELECT * FROM password_resets WHERE email = ? AND code = ?
+    if (lower.includes('from password_resets where email = ? and code = ?')) {
+      const [email, code] = params;
+      const list = (this.tables.password_resets || [])
+        .filter(x => x.email === email && x.code === code && !x.used)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      return list;
     }
 
     // SELECT MAX(id) as max_id FROM sync_ledger WHERE user_id = ?
@@ -298,17 +308,45 @@ class JsonStore {
       this.save();
       return;
     }
+
+    // UPDATE password_resets SET used = 1 WHERE id = ?
+    if (lower.includes('update password_resets set used = 1 where id = ?')) {
+      const id = params[0];
+      const rec = (this.tables.password_resets || []).find(x => x.id === id);
+      if (rec) {
+        rec.used = 1;
+      }
+      this.save();
+      return;
+    }
+
+    // UPDATE users SET password_hash = ? WHERE email = ?
+    if (lower.includes('update users set password_hash = ? where email = ?')) {
+      const [hash, email] = params;
+      const rec = (this.tables.users || []).find(x => x.email === email);
+      if (rec) {
+        rec.password_hash = hash;
+      }
+      this.save();
+      return;
+    }
   }
 }
 
 let pgInstance: any = null;
 
-if (process.env.DATABASE_URL) {
+const dbUrl = 
+  process.env.DATABASE_URL || 
+  process.env.POSTGRES_URL || 
+  process.env.POSTGRES_PRISMA_URL || 
+  process.env.POSTGRES_URL_NON_POOLING;
+
+if (dbUrl) {
   try {
-    const isLocalhost = process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1');
+    const isLocalhost = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
     const pg = require('pg');
     const pool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL,
+      connectionString: dbUrl,
       ssl: isLocalhost ? false : { rejectUnauthorized: false }
     });
 
@@ -540,6 +578,15 @@ if (process.env.DATABASE_URL) {
         updated_at TEXT NOT NULL,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS password_resets (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        code TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_password_resets_email ON password_resets(email);
     `).catch((err: any) => {
       console.warn('Error creating Postgres tables:', err.message);
     });
@@ -761,5 +808,15 @@ if (nativeDb) {
       updated_at TEXT NOT NULL,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      code TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_password_resets_email ON password_resets(email);
   `);
 }

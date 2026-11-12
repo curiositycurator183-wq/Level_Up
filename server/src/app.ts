@@ -18,6 +18,8 @@ import {
   resetUserData, 
   broadcastUserSync 
 } from './sync.js';
+import { validateLegitEmail, validatePassword } from './validation.js';
+import { sendPasswordResetEmail } from './email.js';
 
 export const app = express();
 
@@ -26,42 +28,49 @@ app.use(express.json({ limit: '50mb' }));
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    database: db.isPostgres ? 'postgresql' : 'sqlite',
+    time: new Date().toISOString()
+  });
 });
 
 // --- Auth Routes ---
 app.post('/api/auth/register', async (req, res) => {
   const { email, password, display_name, timezone } = req.body;
-  if (!email || !password || !display_name) {
-    res.status(400).json({ error: 'Email, password, and display name are required' });
+
+  // Validate legitimate email
+  const emailValidation = validateLegitEmail(email);
+  if (!emailValidation.valid) {
+    res.status(400).json({ error: emailValidation.reason });
     return;
   }
 
-  const cleanEmail = email.toLowerCase().trim();
+  // Validate password
+  const passValidation = validatePassword(password);
+  if (!passValidation.valid) {
+    res.status(400).json({ error: passValidation.reason });
+    return;
+  }
+
+  if (!display_name || typeof display_name !== 'string' || !display_name.trim()) {
+    res.status(400).json({ error: 'Please provide your name.' });
+    return;
+  }
+
+  const cleanEmail = emailValidation.cleanEmail;
   const cleanName = display_name.trim();
 
   try {
-    const existing = await db.prepare('SELECT id, created_at FROM users WHERE email = ?').get(cleanEmail) as any;
-    const now = new Date().toISOString();
-    const tz = timezone || 'UTC';
-    const passwordHash = hashPassword(password);
-
+    const existing = await db.prepare('SELECT id FROM users WHERE email = ?').get(cleanEmail) as any;
     if (existing) {
-      // User already exists: update password and display name, then log in
-      await db.prepare(`
-        UPDATE users 
-        SET password_hash = ?, display_name = ?, timezone = ?
-        WHERE id = ?
-      `).run(passwordHash, cleanName, tz, existing.id);
-
-      const token = generateToken({ id: existing.id, email: cleanEmail, display_name: cleanName });
-      res.json({
-        token,
-        user: { id: existing.id, email: cleanEmail, display_name: cleanName, timezone: tz, created_at: existing.created_at || now }
-      });
+      res.status(409).json({ error: 'An account with this email address already exists. Please sign in or use "Forgot Password".' });
       return;
     }
 
+    const now = new Date().toISOString();
+    const tz = timezone || 'UTC';
+    const passwordHash = hashPassword(password);
     const userId = crypto.randomUUID();
 
     await db.prepare(`
@@ -90,51 +99,34 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   const { email, password, device_label } = req.body;
-  if (!email || !password) {
-    res.status(400).json({ error: 'Email and password are required' });
+
+  const emailValidation = validateLegitEmail(email);
+  if (!emailValidation.valid) {
+    res.status(400).json({ error: emailValidation.reason });
     return;
   }
 
-  const cleanEmail = email.toLowerCase().trim();
+  if (!password) {
+    res.status(400).json({ error: 'Password is required.' });
+    return;
+  }
+
+  const cleanEmail = emailValidation.cleanEmail;
 
   try {
-    let user = await db.prepare('SELECT * FROM users WHERE email = ?').get(cleanEmail) as any;
-    const now = new Date().toISOString();
+    const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(cleanEmail) as any;
 
     if (!user) {
-      // In serverless environments (or fresh lambda containers), auto-provision account
-      const userId = crypto.randomUUID();
-      const passwordHash = hashPassword(password);
-      const displayName = cleanEmail.split('@')[0];
-      
-      await db.prepare(`
-        INSERT INTO users (id, email, password_hash, display_name, timezone, created_at)
-        VALUES (?, ?, ?, ?, 'UTC', ?)
-      `).run(userId, cleanEmail, passwordHash, displayName, now);
-
-      try {
-        await db.prepare(`
-          INSERT INTO user_settings (user_id, timezone, daily_target_minutes, theme, updated_at, version)
-          VALUES (?, 'UTC', 120, 'system', ?, 1)
-        `).run(userId, now);
-      } catch {}
-
-      user = {
-        id: userId,
-        email: cleanEmail,
-        password_hash: passwordHash,
-        display_name: displayName,
-        timezone: 'UTC',
-        created_at: now
-      };
-    } else {
-      // Check password
-      if (!comparePassword(password, user.password_hash)) {
-        res.status(401).json({ error: 'Invalid email or password' });
-        return;
-      }
+      res.status(401).json({ error: 'No account found with this email. Please click "Create account" to register.' });
+      return;
     }
 
+    if (!comparePassword(password, user.password_hash)) {
+      res.status(401).json({ error: 'Incorrect password. Please try again or use "Forgot Password" to reset it.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
     const deviceId = crypto.randomUUID();
     if (device_label) {
       try {
@@ -160,6 +152,119 @@ app.post('/api/auth/login', async (req, res) => {
   } catch (err: any) {
     console.error('Login error:', err);
     res.status(500).json({ error: err.message || 'Login failed' });
+  }
+});
+
+// --- Forgot Password: Request Verification Code ---
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+
+  const emailValidation = validateLegitEmail(email);
+  if (!emailValidation.valid) {
+    res.status(400).json({ error: emailValidation.reason });
+    return;
+  }
+
+  const cleanEmail = emailValidation.cleanEmail;
+
+  try {
+    const user = await db.prepare('SELECT id, email, display_name FROM users WHERE email = ?').get(cleanEmail) as any;
+    if (!user) {
+      res.status(404).json({ error: 'No account found with this email address. Please check your email or register.' });
+      return;
+    }
+
+    // Generate secure 6-digit verification code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 mins
+    const now = new Date().toISOString();
+    const resetId = crypto.randomUUID();
+
+    await db.prepare(`
+      INSERT INTO password_resets (id, email, code, expires_at, used, created_at)
+      VALUES (?, ?, ?, ?, 0, ?)
+    `).run(resetId, cleanEmail, code, expiresAt, now);
+
+    const emailResult = await sendPasswordResetEmail(cleanEmail, code, user.display_name);
+
+    res.json({
+      success: true,
+      message: `A 6-digit verification code has been sent to ${cleanEmail}. Please enter it below to set your new password.`,
+      email: cleanEmail,
+      previewCode: emailResult.previewCode
+    });
+  } catch (err: any) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ error: err.message || 'Failed to send reset code' });
+  }
+});
+
+// --- Reset Password: Submit Code & New Password ---
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { email, code, new_password } = req.body;
+
+  const emailValidation = validateLegitEmail(email);
+  if (!emailValidation.valid) {
+    res.status(400).json({ error: emailValidation.reason });
+    return;
+  }
+
+  const passValidation = validatePassword(new_password);
+  if (!passValidation.valid) {
+    res.status(400).json({ error: passValidation.reason });
+    return;
+  }
+
+  if (!code || typeof code !== 'string' || !/^\d{6}$/.test(code.trim())) {
+    res.status(400).json({ error: 'Please enter the 6-digit verification code sent to your email.' });
+    return;
+  }
+
+  const cleanEmail = emailValidation.cleanEmail;
+  const cleanCode = code.trim();
+
+  try {
+    const resetRecord = await db.prepare(`
+      SELECT * FROM password_resets
+      WHERE email = ? AND code = ? AND used = 0
+      ORDER BY created_at DESC LIMIT 1
+    `).get(cleanEmail, cleanCode) as any;
+
+    if (!resetRecord) {
+      res.status(400).json({ error: 'Invalid verification code. Please check the code or request a new one.' });
+      return;
+    }
+
+    if (new Date(resetRecord.expires_at).getTime() < Date.now()) {
+      res.status(400).json({ error: 'This verification code has expired (15-minute limit). Please request a new code.' });
+      return;
+    }
+
+    // Mark code as used
+    await db.prepare('UPDATE password_resets SET used = 1 WHERE id = ?').run(resetRecord.id);
+
+    // Hash new password and update user
+    const newHash = hashPassword(new_password);
+    await db.prepare('UPDATE users SET password_hash = ? WHERE email = ?').run(newHash, cleanEmail);
+
+    const user = await db.prepare('SELECT id, email, display_name, timezone, created_at FROM users WHERE email = ?').get(cleanEmail) as any;
+    const token = generateToken({ id: user.id, email: user.email, display_name: user.display_name });
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully! You are now logged in.',
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        display_name: user.display_name,
+        timezone: user.timezone || 'UTC',
+        created_at: user.created_at
+      }
+    });
+  } catch (err: any) {
+    console.error('Reset password error:', err);
+    res.status(500).json({ error: err.message || 'Password reset failed' });
   }
 });
 

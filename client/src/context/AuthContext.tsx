@@ -17,6 +17,8 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string, deviceLabel?: string) => Promise<void>;
   register: (email: string, password: string, displayName: string, timezone?: string) => Promise<void>;
+  forgotPassword: (email: string) => Promise<{ message: string; previewCode?: string }>;
+  resetPassword: (email: string, code: string, newPassword: string) => Promise<void>;
   logout: () => void;
   continueAsGuest: (displayName: string) => void;
 }
@@ -149,6 +151,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await syncEngine.syncNow();
   };
 
+  const forgotPassword = async (email: string): Promise<{ message: string; previewCode?: string }> => {
+    const baseUrl = getServerUrl();
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}/api/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+    } catch {
+      throw new Error(`Cannot reach server at ${baseUrl || 'current origin'}. Check connection.`);
+    }
+
+    const data = await safeJson(res);
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to request password reset');
+    }
+
+    return { message: data.message, previewCode: data.previewCode };
+  };
+
+  const resetPassword = async (email: string, code: string, newPassword: string): Promise<void> => {
+    const baseUrl = getServerUrl();
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}/api/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, code, new_password: newPassword })
+      });
+    } catch {
+      throw new Error(`Cannot reach server at ${baseUrl || 'current origin'}. Check connection.`);
+    }
+
+    const data = await safeJson(res);
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to reset password');
+    }
+
+    if (data.token && data.user) {
+      localStorage.setItem('level_up_token', data.token);
+      localStorage.setItem('level_up_user', JSON.stringify(data.user));
+      try {
+        await db.sync_meta.put({ key: 'last_cursor', value: 0 });
+      } catch {}
+      setToken(data.token);
+      setUser(data.user);
+      syncEngine.connectWebSocket();
+      await syncEngine.syncNow();
+    }
+  };
+
   const continueAsGuest = (displayName: string) => {
     const guestUser: User = {
       id: 'local_' + crypto.randomUUID(),
@@ -170,7 +224,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout, continueAsGuest }}>
+    <AuthContext.Provider value={{ user, token, loading, login, register, forgotPassword, resetPassword, logout, continueAsGuest }}>
       {children}
     </AuthContext.Provider>
   );

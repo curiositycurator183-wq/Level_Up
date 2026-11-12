@@ -4,12 +4,25 @@ import { safeJson } from '../utils/http';
 
 export type SyncStatus = 'synced' | 'syncing' | 'offline' | 'pending' | 'error';
 
+export const DEFAULT_PRODUCTION_SERVER = 'https://levelup-virid.vercel.app';
+
 export function getServerUrl(): string {
   const custom = localStorage.getItem('level_up_server_url');
   if (custom && custom.trim()) {
     return custom.trim().replace(/\/+$/, '');
   }
-  // Default to relative or current origin
+
+  // If in Capacitor Native Android app or non-browser standalone shell, route to production cloud backend
+  if (
+    typeof window !== 'undefined' &&
+    (window.location.protocol === 'capacitor:' ||
+     !window.location.host ||
+     (window.location.hostname === 'localhost' && window.location.port !== '5173'))
+  ) {
+    return DEFAULT_PRODUCTION_SERVER;
+  }
+
+  // Default to relative or current origin on the web
   return '';
 }
 
@@ -25,8 +38,12 @@ export function getWebSocketUrl(token: string): string {
     }
   }
 
-  // If in capacitor native app and no custom server URL set, attempt standard host or localhost
-  if (window.location.protocol === 'capacitor:' || window.location.hostname === 'localhost') {
+  // If in capacitor native app and no custom server URL set, attempt production or localhost
+  if (window.location.protocol === 'capacitor:' || !window.location.host) {
+    return `wss://levelup-virid.vercel.app/ws?token=${encodeURIComponent(token)}`;
+  }
+
+  if (window.location.hostname === 'localhost' && window.location.port === '5173') {
     return `ws://localhost:3000/ws?token=${encodeURIComponent(token)}`;
   }
 
